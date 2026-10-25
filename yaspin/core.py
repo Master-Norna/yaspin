@@ -365,7 +365,7 @@ class Yaspin:
         self._spin_thread = threading.Thread(target=self._spin)
         try:
             self._spin_thread.start()
-        except Exception:
+        except BaseException:
             # Ensure cursor is not hidden if any failure occurs that prevents
             # getting it back
             self._show_cursor()
@@ -418,6 +418,7 @@ class Yaspin:
                 # set the hidden spinner flag
                 self._hide_spin.set()
                 self._clear_line()
+                self._show_cursor()
 
                 # flush the stream buffer so the current line
                 # can be rewritten to
@@ -466,6 +467,7 @@ class Yaspin:
                 self._hide_spin.clear()
                 # clear the current line so the spinner is not appended to it
                 self._clear_line()
+                self._hide_cursor()
 
     def write(self, text: str) -> None:
         """

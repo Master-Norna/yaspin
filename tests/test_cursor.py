@@ -3,12 +3,13 @@ tests.test_cursor
 ~~~~~~~~~~~~~~~~~
 
 Check that the cursor is hidden for the whole spinner run and only
-shown again at ``stop()`` (or when thread start fails).
+shown while paused, at ``stop()``, or when thread start fails.
 """
 
 from unittest import mock
 
 import io
+import re
 import time
 
 import pytest
@@ -43,13 +44,83 @@ def test_cursor_stays_hidden_between_start_and_stop():
     assert stream.getvalue().count("\033[?25h") == 1
 
 
-def test_cursor_shown_when_thread_start_fails():
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt, SystemExit])
+def test_cursor_shown_when_thread_start_fails(error_type):
     stream = _FakeTTY()
     sp = yaspin(Spinner("-|/", 80), text="x", stream=stream)
 
-    with mock.patch("threading.Thread.start", side_effect=RuntimeError("boom")):
-        with pytest.raises(RuntimeError):
-            sp.start()
+    error = error_type("boom")
+    with mock.patch("threading.Thread.start", side_effect=error), pytest.raises(error_type) as exc_info:
+        sp.start()
+
+    assert exc_info.value is error
 
     # The cursor must be restored when the thread cannot be started.
     assert "\033[?25h" in stream.getvalue()
+
+
+@pytest.mark.parametrize("stream_type", [_FakeTTY, io.StringIO], ids=["tty", "non-tty"])
+def test_cursor_visibility_during_hide_show(stream_type):
+    stream = stream_type()
+    sp = yaspin(stream=stream)
+    sp.start()
+
+    def cursor_codes():
+        return re.findall(r"\033\[\?25[lh]", stream.getvalue())
+
+    try:
+        sp.hide()
+        expected = ["\033[?25l", "\033[?25h"] if stream.isatty() else []
+        assert cursor_codes() == expected
+        sp.hide()
+        assert cursor_codes() == expected
+
+        sp.show()
+        if stream.isatty():
+            expected.append("\033[?25l")
+        assert cursor_codes() == expected
+        sp.show()
+        assert cursor_codes() == expected
+    finally:
+        sp.stop()
+
+    if stream.isatty():
+        expected.append("\033[?25h")
+    assert cursor_codes() == expected
+
+
+@pytest.mark.parametrize("stream_type", [_FakeTTY, io.StringIO], ids=["tty", "non-tty"])
+@pytest.mark.parametrize("raise_error", [False, True], ids=["normal", "exception"])
+def test_cursor_visibility_in_nested_hidden_context(stream_type, raise_error):
+    stream = stream_type()
+    sp = yaspin(stream=stream)
+    sp.start()
+
+    def cursor_codes():
+        return re.findall(r"\033\[\?25[lh]", stream.getvalue())
+
+    expected = ["\033[?25l", "\033[?25h"] if stream.isatty() else []
+    try:
+        try:
+            with sp.hidden():
+                assert cursor_codes() == expected
+                with sp.hidden():
+                    assert cursor_codes() == expected
+                assert cursor_codes() == expected
+                if raise_error:
+                    raise ValueError("prompt failed")
+        except ValueError:
+            if not raise_error:
+                raise
+
+        if stream.isatty():
+            expected.append("\033[?25l")
+        assert cursor_codes() == expected
+        assert sp._hidden_level == 0
+        assert not sp._hide_spin.is_set()
+    finally:
+        sp.stop()
+
+    if stream.isatty():
+        expected.append("\033[?25h")
+    assert cursor_codes() == expected
